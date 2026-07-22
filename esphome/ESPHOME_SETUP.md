@@ -51,6 +51,7 @@ correct even if a schedule or the app changes the lights).
   for this; it's device-side.
 - **Classic ESP32 instead of S3?** Change `board:` to your board (e.g.
   `esp32dev`) and drop `flash_size: 16MB`. Everything else is identical.
-- **Brightness / per-zone:** not included yet (opcode 82 / opcode 80 bitmask,
-  unverified on hardware). Once the switch works we can add a brightness slider
-  and/or three separate zone switches.
+- **Per-zone control:** the config exposes a master **Garden Lighting** switch
+  plus **Garden Zone 1/2/3** switches (independent, via the `controlSubChannels`
+  affect-mask — see `../PROTOCOL.md`). The it2-300 is on/off-per-zone; it has **no
+  dimming** (the app exposes none either), so there is no brightness control.

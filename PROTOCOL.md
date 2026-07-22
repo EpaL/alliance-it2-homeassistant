@@ -50,7 +50,7 @@ Send this once after connecting, before other commands. (There is a separate
 | query on/off | 1 | `00 00 00` | `A5 11 01 03 00 00 00` |
 | read device status | 3 | (none) | `A5 11 03 00` |
 | clear error status | 5 | `0F` | `A5 11 05 01 0F` |
-| **set brightness** | 82 | `<0..100>` | `A5 11 52 01 32` (=50%) |
+| set brightness¹ | 82 | `<0..100>` | `A5 11 52 01 32` (=50%) |
 | control sub-channel | 80 | `<ch> <val>` | `A5 11 50 02 00 64` |
 | get sub-channel status | 80 | `00` | `A5 11 50 01 00` |
 | set time | 22 | `yy mm dd wk hh mm ss` | |
@@ -58,6 +58,9 @@ Send this once after connecting, before other commands. (There is a separate
 | get sunset/sunrise | 78 | (none) | |
 | weekly schedule | 24 | `id wk hh mm ss action` | |
 | set device name | 64 | `<16 bytes name>` | |
+
+¹ In the app's command table but **not exposed by the app** for the it2-300 (no
+brightness UI) — this unit is on/off-per-zone only. Present here for completeness.
 
 ### Notification semantics (device → app)
 - on/off reply (opcode 1): data byte 0 = state (1=on, 2/0=off); later bytes carry
@@ -83,10 +86,33 @@ the channels byte flips 0x70→0x77.
 **Verified working** on a real it2-300 over the Mac's Bluetooth (2026-07-18):
 lights physically switch, telemetry shows load ramping.
 
+### Per-zone control (verified on it2-300, 3 zones)
+The channel byte `p0 = (affect_mask << 4) | on_states` lets you control zones
+**independently** — the affect-mask (high nibble) selects which zones the command
+touches, so other zones are left untouched. Bits: `bit0=zone1, bit1=zone2,
+bit2=zone3`.
+
+| Action | p0 | frame |
+|---|---|---|
+| all zones on | `0x77` | `A5 seq 50 01 77 00` |
+| all zones off | `0x70` | `A5 seq 50 01 70 00` |
+| zone 1 on / off | `0x11` / `0x10` | `A5 seq 50 01 11 00` / `... 10 00` |
+| zone 2 on / off | `0x22` / `0x20` | |
+| zone 3 on / off | `0x44` / `0x40` | |
+
+Zone state comes back in the sub-channel reply (opcode `0x51`, byte 0 low nibble)
+and the periodic telemetry (opcode `0x80`). Confirmed independent on a real
+it2-300 (2026-07-21).
+
+**No dimming:** the it2-300 is on/off relays per zone — it does **not** support
+brightness. The `setBrightness` opcode (`0x52`) exists in the app's command table
+(shared across the product line) but the official app exposes no brightness
+control for this unit, and it is not implemented here.
+
 ## Notes / open points
 - `verSeq` increments per command in the app; the device appears to treat it as a
   version+sequence tag. `it2ble.py` reproduces this.
 - Whether the device strictly *requires* auth before accepting on/off is uncertain
   — `it2ble.py` always sends auth first (matching the app) to be safe.
-- The it2-300 exposes multiple channels/zones; `channel`/`brightness` opcodes drive
-  them. Exact channel numbering is best confirmed by watching FFF4 replies.
+- The it2-300 exposes 3 independent zones via the `controlSubChannels` affect-mask
+  (see the per-zone table above). No dimming on this unit.

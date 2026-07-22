@@ -11,7 +11,6 @@ esp32:
 logger:
   level: INFO
 
-# Native Home Assistant API — device appears in HA automatically, no MQTT.
 api:
   encryption:
     key: !secret it2_bridge__api_key
@@ -26,9 +25,12 @@ wifi:
   ap:
     ssid: "it2-bridge fallback"
 
-# Rolling sequence byte the app uses: verSeq = 0x10 + pkgId, pkgId cycles 1..14.
 globals:
   - id: ble_seq
+    type: uint8_t
+    restore_value: no
+    initial_value: '0'
+  - id: chan_state          # per-zone on bits from device: bit0=zone1, bit1=zone2, bit2=zone3
     type: uint8_t
     restore_value: no
     initial_value: '0'
@@ -40,7 +42,6 @@ esp32_ble_tracker:
     window: 300ms
 
 ble_client:
-    # it2 uses a STATIC RANDOM BLE address (starts 0xFF), unrelated to its WiFi MAC.
   - mac_address: FF:20:00:00:28:B8
     id: it2
     on_connect:
@@ -49,13 +50,12 @@ ble_client:
           id: it2
           service_uuid: 'FFF0'
           characteristic_uuid: 'FFF3'
-          # auth with the default password "123456" (0x31..0x36)
           value: [0xA5, 0x10, 0x10, 0x06, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36]
       - logger.log: "it2: connected + auth sent"
     on_disconnect:
       - logger.log: "it2: disconnected"
 
-# Live on/off state from FFF4 notifications, as a 1.0/0.0 internal sensor.
+# Tracks per-zone on/off bits from the it2's notifications into chan_state.
 sensor:
   - platform: ble_client
     type: characteristic
@@ -67,51 +67,116 @@ sensor:
     notify: true
     lambda: |-
       if (x.size() >= 5 && x[0] == 0xA5) {
-        uint8_t opcode = x[2];
-        if (opcode == 0x02) return x[4] == 1 ? 1.0f : 0.0f;          // master on/off reply
-        if (opcode == 0x51) return (x[4] & 0x0F) != 0 ? 1.0f : 0.0f;  // sub-channel reply
+        uint8_t op = x[2];
+        if (op == 0x51) id(chan_state) = x[4] & 0x0F;                    // sub-channel reply
+        else if (op == 0x80 && x.size() > 16) id(chan_state) = x[16] & 0x0F; // telemetry
+        else if (op == 0x02 && x[4] != 1) id(chan_state) = 0;            // master OFF -> all zones off
       }
-      return id(it2_state).state;   // other frames -> keep state (no flicker)
+      return (float) id(chan_state);
 
 switch:
+  # Master: all zones together
   - platform: template
     name: "Garden Lighting"
     icon: "mdi:outdoor-lamp"
-    lambda: 'return id(it2_state).state > 0.5;'
+    lambda: 'return id(chan_state) != 0;'
     optimistic: false
     turn_on_action:
       - ble_client.ble_write:
           id: it2
           service_uuid: 'FFF0'
           characteristic_uuid: 'FFF3'
-          value: !lambda |-
-            uint8_t s = 0x10 + id(ble_seq);
-            id(ble_seq) = (id(ble_seq) + 1 >= 15) ? 1 : (id(ble_seq) + 1);
-            return {0xA5, s, 0x01, 0x03, 0x01, 0x00, 0x00};   // master ON
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x01,0x03,0x01,0x00,0x00};'
       - delay: 300ms
       - ble_client.ble_write:
           id: it2
           service_uuid: 'FFF0'
           characteristic_uuid: 'FFF3'
-          value: !lambda |-
-            uint8_t s = 0x10 + id(ble_seq);
-            id(ble_seq) = (id(ble_seq) + 1 >= 15) ? 1 : (id(ble_seq) + 1);
-            return {0xA5, s, 0x50, 0x01, 0x77, 0x00};          // all channels ON (0x77 = zones 1/2/3)
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x50,0x01,0x77,0x00};'
     turn_off_action:
       - ble_client.ble_write:
           id: it2
           service_uuid: 'FFF0'
           characteristic_uuid: 'FFF3'
-          value: !lambda |-
-            uint8_t s = 0x10 + id(ble_seq);
-            id(ble_seq) = (id(ble_seq) + 1 >= 15) ? 1 : (id(ble_seq) + 1);
-            return {0xA5, s, 0x01, 0x03, 0x02, 0x00, 0x00};   // master OFF
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x01,0x03,0x02,0x00,0x00};'
       - delay: 300ms
       - ble_client.ble_write:
           id: it2
           service_uuid: 'FFF0'
           characteristic_uuid: 'FFF3'
-          value: !lambda |-
-            uint8_t s = 0x10 + id(ble_seq);
-            id(ble_seq) = (id(ble_seq) + 1 >= 15) ? 1 : (id(ble_seq) + 1);
-            return {0xA5, s, 0x50, 0x01, 0x70, 0x00};          // channels OFF
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x50,0x01,0x70,0x00};'
+
+  # Zone 1 (affect-mask 0x1, on=0x11 off=0x10)
+  - platform: template
+    name: "Garden Zone 1"
+    icon: "mdi:outdoor-lamp"
+    lambda: 'return (id(chan_state) & 0x01) != 0;'
+    optimistic: false
+    turn_on_action:
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x01,0x03,0x01,0x00,0x00};'
+      - delay: 300ms
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x50,0x01,0x11,0x00};'
+    turn_off_action:
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x50,0x01,0x10,0x00};'
+
+  # Zone 2 (on=0x22 off=0x20)
+  - platform: template
+    name: "Garden Zone 2"
+    icon: "mdi:outdoor-lamp"
+    lambda: 'return (id(chan_state) & 0x02) != 0;'
+    optimistic: false
+    turn_on_action:
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x01,0x03,0x01,0x00,0x00};'
+      - delay: 300ms
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x50,0x01,0x22,0x00};'
+    turn_off_action:
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x50,0x01,0x20,0x00};'
+
+  # Zone 3 (on=0x44 off=0x40)
+  - platform: template
+    name: "Garden Zone 3"
+    icon: "mdi:outdoor-lamp"
+    lambda: 'return (id(chan_state) & 0x04) != 0;'
+    optimistic: false
+    turn_on_action:
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x01,0x03,0x01,0x00,0x00};'
+      - delay: 300ms
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x50,0x01,0x44,0x00};'
+    turn_off_action:
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda 'uint8_t s=0x10+id(ble_seq); id(ble_seq)=(id(ble_seq)+1>=15)?1:(id(ble_seq)+1); return {0xA5,s,0x50,0x01,0x40,0x00};'
