@@ -76,7 +76,7 @@ sensor:
 switch:
   - platform: template
     name: "Garden Lighting"
-    icon: "mdi:led-strip-variant"
+    icon: "mdi:outdoor-lamp"
     lambda: 'return id(it2_state).state > 0.5;'
     optimistic: false
     turn_on_action:
