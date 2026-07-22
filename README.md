@@ -24,6 +24,16 @@ reverse-engineers the app's BLE command protocol and drives the device directly.
 
 See [`PROTOCOL.md`](PROTOCOL.md) for the full protocol writeup.
 
+## Compatibility
+
+Developed and verified on an **it2-300**. The **it2-150** (and other it2-series
+units) use the same app, firmware family, and BLE protocol, so the master on/off
+and the setup should work unchanged — the 150 is essentially the same controller
+at a lower transformer wattage. The one thing that may differ is the **number of
+zones**: this config exposes three zone switches, so on a unit with fewer zones
+the extra zone switch(es) simply won't do anything (the master switch and on/off
+are unaffected). Verified reports for other models welcome — open an issue.
+
 ## What's here
 
 | Path | What it is |
