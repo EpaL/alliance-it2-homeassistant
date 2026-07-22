@@ -1,0 +1,19 @@
+[Unit]
+Description=it2 Bluetooth-to-MQTT bridge
+# Needs Bluetooth + network up first
+After=bluetooth.target network-online.target
+Wants=bluetooth.target network-online.target
+
+[Service]
+Type=simple
+# config lives here (chmod 600, root-owned — it holds the MQTT password)
+EnvironmentFile=/etc/it2_bridge.env
+ExecStart=/opt/it2-bridge/venv/bin/python /opt/it2-bridge/it2_bridge.py
+Restart=always
+RestartSec=5
+# BlueZ access works as root; if you run as a non-root user, add it to the
+# 'bluetooth' group and grant cap_net_admin to python instead.
+User=root
+
+[Install]
+WantedBy=multi-user.target

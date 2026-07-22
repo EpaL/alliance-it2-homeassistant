@@ -1,0 +1,2 @@
+bleak>=0.21
+aiomqtt>=2.0

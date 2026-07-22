@@ -1,0 +1,117 @@
+esphome:
+  name: it2-bridge
+  friendly_name: it2 Garden Lighting
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+# Native Home Assistant API — device appears in HA automatically, no MQTT.
+api:
+  encryption:
+    key: !secret it2_bridge__api_key
+
+ota:
+  - platform: esphome
+    password: !secret alliance_it2pro_controller__ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "it2-bridge fallback"
+
+# Rolling sequence byte the app uses: verSeq = 0x10 + pkgId, pkgId cycles 1..14.
+globals:
+  - id: ble_seq
+    type: uint8_t
+    restore_value: no
+    initial_value: '0'
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+    interval: 320ms
+    window: 300ms
+
+ble_client:
+    # it2 uses a STATIC RANDOM BLE address (starts 0xFF), unrelated to its WiFi MAC.
+  - mac_address: FF:20:00:00:28:B8
+    id: it2
+    on_connect:
+      - delay: 800ms
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          # auth with the default password "123456" (0x31..0x36)
+          value: [0xA5, 0x10, 0x10, 0x06, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36]
+      - logger.log: "it2: connected + auth sent"
+    on_disconnect:
+      - logger.log: "it2: disconnected"
+
+# Live on/off state from FFF4 notifications, as a 1.0/0.0 internal sensor.
+sensor:
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: it2
+    id: it2_state
+    internal: true
+    service_uuid: 'FFF0'
+    characteristic_uuid: 'FFF4'
+    notify: true
+    lambda: |-
+      if (x.size() >= 5 && x[0] == 0xA5) {
+        uint8_t opcode = x[2];
+        if (opcode == 0x02) return x[4] == 1 ? 1.0f : 0.0f;          // master on/off reply
+        if (opcode == 0x51) return (x[4] & 0x0F) != 0 ? 1.0f : 0.0f;  // sub-channel reply
+      }
+      return id(it2_state).state;   // other frames -> keep state (no flicker)
+
+switch:
+  - platform: template
+    name: "Garden Lighting"
+    icon: "mdi:led-strip-variant"
+    lambda: 'return id(it2_state).state > 0.5;'
+    optimistic: false
+    turn_on_action:
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda |-
+            uint8_t s = 0x10 + id(ble_seq);
+            id(ble_seq) = (id(ble_seq) + 1 >= 15) ? 1 : (id(ble_seq) + 1);
+            return {0xA5, s, 0x01, 0x03, 0x01, 0x00, 0x00};   // master ON
+      - delay: 300ms
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda |-
+            uint8_t s = 0x10 + id(ble_seq);
+            id(ble_seq) = (id(ble_seq) + 1 >= 15) ? 1 : (id(ble_seq) + 1);
+            return {0xA5, s, 0x50, 0x01, 0x77, 0x00};          // all channels ON (0x77 = zones 1/2/3)
+    turn_off_action:
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda |-
+            uint8_t s = 0x10 + id(ble_seq);
+            id(ble_seq) = (id(ble_seq) + 1 >= 15) ? 1 : (id(ble_seq) + 1);
+            return {0xA5, s, 0x01, 0x03, 0x02, 0x00, 0x00};   // master OFF
+      - delay: 300ms
+      - ble_client.ble_write:
+          id: it2
+          service_uuid: 'FFF0'
+          characteristic_uuid: 'FFF3'
+          value: !lambda |-
+            uint8_t s = 0x10 + id(ble_seq);
+            id(ble_seq) = (id(ble_seq) + 1 >= 15) ? 1 : (id(ble_seq) + 1);
+            return {0xA5, s, 0x50, 0x01, 0x70, 0x00};          // channels OFF

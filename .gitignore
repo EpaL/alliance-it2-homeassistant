@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets — never commit
+esphome/secrets.yaml
+secrets.yaml
+*.flows
+captured/
+
+# Large / third-party binaries (do not redistribute)
+*.apk
+frida-server
+frida-server-*
+*.xz
+
+# Logs & local machine state
+emulator.log
+*.log
+.claude/
+aurora_meta.json
+
+# OS
+.DS_Store
