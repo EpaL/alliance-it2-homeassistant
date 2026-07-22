@@ -41,6 +41,14 @@ correct even if a schedule or the app changes the lights).
 - **Phone app vs the bridge:** the it2 accepts one Bluetooth connection at a time.
   While the ESP32 is connected, the Alliance app won't connect. Power off the
   ESP32 (or remove its `ble_client`) if you need the app.
+- **Reconnecting after a reflash / reboot:** when the ESP32 reboots (e.g. an OTA
+  reinstall), the it2 keeps holding the now-dead connection and refuses the new
+  one until its own link-supervision timeout expires. If control stops working
+  after a flash and the log shows no `it2: connected + auth sent`, either wait
+  ~30–60 s for the it2 to drop the stale link, or **power-cycle the transformer**
+  (off ~15 s) to force it. This only happens on reboot — in steady-state
+  operation the connection is held 24/7 and is stable. There is no ESPHome knob
+  for this; it's device-side.
 - **Classic ESP32 instead of S3?** Change `board:` to your board (e.g.
   `esp32dev`) and drop `flash_size: 16MB`. Everything else is identical.
 - **Brightness / per-zone:** not included yet (opcode 82 / opcode 80 bitmask,
